@@ -1,0 +1,117 @@
+name: "Reusable Build & Deploy"
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        required: true
+        type: string
+      environment:
+        required: true
+        type: string
+      values_file:
+        required: true
+        type: string
+      helm_chart_name:
+        required: false
+        type: string
+        default: "foundation-chart"
+      helm_chart_version:
+        required: false
+        type: string
+        default: "0.1.0"
+
+jobs:
+  build-and-push:
+    runs-on: tatahostit-runners
+    outputs:
+      image_tag: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # NO DOCKER LOGIN NEEDED
+      # Your runner has /home/runner/.docker/config.json mounted.
+      # It is already authenticated with Harbor.
+
+      - name: Docker Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: harbor.tatahostit.com/library/${{ inputs.app_name }}
+          tags: |
+            type=sha,format=long
+            type=ref,event=branch
+
+      - name: Build and Push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  update-manifests:
+    needs: build-and-push
+    runs-on: tatahostit-runners
+    steps:
+      - name: Checkout App Code
+        uses: actions/checkout@v4
+        with:
+          path: app-code
+
+      - name: Checkout Manifest Repo
+        # We manually clone because 'actions/checkout' prefers GitHub secrets.
+        # We use the Env Var injected by K8s directly.
+        run: |
+          git clone https://oauth2:${MANIFEST_REPO_TOKEN}@github.com/TataHostIT/tatahostit-manifests.git manifest-repo
+          cd manifest-repo
+          git checkout main
+
+      - name: Setup & Patch Manifests
+        env:
+          APP: ${{ inputs.app_name }}
+          ENV: ${{ inputs.environment }}
+          TAG: ${{ needs.build-and-push.outputs.image_tag }}
+          CHART_NAME: ${{ inputs.helm_chart_name }}
+          CHART_VER: ${{ inputs.helm_chart_version }}
+        run: |
+          # 1. Define Target Directory
+          TARGET_DIR="manifest-repo/environments/${ENV}/${APP}"
+          mkdir -p $TARGET_DIR
+
+          # 2. Copy Values
+          cp "app-code/${{ inputs.values_file }}" "$TARGET_DIR/values.yaml"
+
+          # 3. Patch Image Tag
+          # Ensure yq is installed on your runner image, or install it here
+          yq -i ".image.tag = \"${TAG}\"" "$TARGET_DIR/values.yaml"
+
+          # 4. Create Wrapper Chart if missing
+          if [ ! -f "$TARGET_DIR/Chart.yaml" ]; then
+            cat <<EOF > "$TARGET_DIR/Chart.yaml"
+          apiVersion: v2
+          name: ${APP}
+          version: 0.1.0
+          dependencies:
+            - name: ${CHART_NAME}
+              version: ${CHART_VER}
+              repository: oci://harbor.tatahostit.com/library
+          EOF
+          fi
+
+      - name: Commit and Push
+        working-directory: manifest-repo
+        run: |
+          git config user.name "CI Pipeline"
+          git config user.email "ci@tatahostit.com"
+          
+          git add .
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "deploy(${{ inputs.app_name }}): update ${{ inputs.environment }} to $TAG"
+            # The remote URL already has the token from the clone step
+            git push origin main
+          fi
