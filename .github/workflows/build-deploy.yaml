@@ -40,9 +40,12 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: harbor.tatahostit.com/library/${{ inputs.app_name }}
+          # GENERATE MEANINGFUL TAGS
           tags: |
-            type=sha,format=long
+            # Tag 1: The "latest" for this specific branch (good for cache)
             type=ref,event=branch
+            # Tag 2: Human Readable: 2026.01.08-e603771
+            type=raw,value={{date 'YYYY.MM.DD'}}-{{sha}}
 
       - name: Build and Push
         uses: docker/build-push-action@v5
@@ -51,6 +54,11 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # --- CACHING MAGIC ---
+          # 1. Look for cache in the "branch-latest" image we pushed previously
+          cache-from: type=registry,ref=harbor.tatahostit.com/library/${{ inputs.app_name }}:${{ github.ref_name }}
+          # 2. Write cache metadata into the image we are building now
+          cache-to: type=inline
 
   update-manifests:
     needs: build-and-push
@@ -61,11 +69,16 @@ jobs:
         with:
           path: app-code
 
+      - name: Install yq
+        run: |
+          wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq
+          chmod +x /usr/bin/yq
+
       - name: Checkout Manifest Repo
         # We manually clone because 'actions/checkout' prefers GitHub secrets.
         # We use the Env Var injected by K8s directly.
         run: |
-          git clone https://oauth2:${MANIFEST_REPO_TOKEN}@github.com/TataHostIT/tatahostit-manifests.git manifest-repo
+          git clone https://oauth2:${GLOBAL_MANIFEST_TOKEN}@github.com/TataHostIT/tatahostit-manifests.git manifest-repo
           cd manifest-repo
           git checkout main
 
