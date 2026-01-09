@@ -69,10 +69,14 @@ jobs:
         with:
           path: app-code
 
-      - name: Install yq
+      - name: Install Tools
         run: |
-          wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq
-          chmod +x /usr/bin/yq
+          sudo apt-get update
+          sudo apt-get install -y wget curl git
+          
+          # Now install yq
+          sudo wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq
+          sudo chmod +x /usr/bin/yq
 
       - name: Checkout Manifest Repo
         # We manually clone because 'actions/checkout' prefers GitHub secrets.
