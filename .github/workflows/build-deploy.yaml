@@ -69,13 +69,10 @@ jobs:
         with:
           path: app-code
 
-      - name: Install Tools
+      - name: Install yq
         run: |
-          sudo apt-get update
-          sudo apt-get install -y wget curl git
-          
-          # Now install yq
-          sudo wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq
+          # Use curl instead of wget, and sudo for permissions
+          sudo curl -L https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -o /usr/bin/yq
           sudo chmod +x /usr/bin/yq
 
       - name: Checkout Manifest Repo
