@@ -9,27 +9,23 @@ on:
       environment:
         required: true
         type: string
-        description: "e.g., dv, pr"
+        description: "e.g., dv, prod"
       values_file:
         required: true
         type: string
-        description: "Path to values file in app repo, e.g., charts/values.yaml"
-      helm_chart_name:
+        description: "Path to values file in app repo, e.g., charts/values-dv.yaml"
+      # OPTIONAL: Add this so we can copy the secret if it exists
+      secret_file:
         required: false
         type: string
-        default: "foundation-chart"
-      helm_chart_version:
-        required: false
-        type: string
-        default: "0.1.0"
+        description: "Path to sealed secret file in app repo, e.g., charts/secret-dv.yaml"
+      # REMOVED: helm_chart_name and helm_chart_version (No longer used/needed)
 
 jobs:
   build-and-push:
     runs-on: tatahostit-runners
     outputs:
-      # We output the explicit Date-SHA tag we calculated
       image_tag: ${{ steps.calc_tag.outputs.tag }}
-
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -37,10 +33,8 @@ jobs:
       - name: Calculate Version Tag
         id: calc_tag
         run: |
-          # Format: YYYY.MM.DD.HHMM-shortSHA
-          # Example: 2026.01.09.1645-a1b2c3d
+          # Result: 2026.01.09.1645-a1b2c3d
           TAG="$(date +'%Y.%m.%d.%H%M')-$(git rev-parse --short HEAD)"
-          
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "Generated Version: $TAG"
 
@@ -55,9 +49,7 @@ jobs:
         with:
           images: harbor.tatahostit.com/library/${{ inputs.app_name }}
           tags: |
-            # Keep 'latest' for the branch for caching
             type=ref,event=branch
-            # Use our explicit tag
             type=raw,value=${{ steps.calc_tag.outputs.tag }}
 
       - name: Build and Push
@@ -96,21 +88,28 @@ jobs:
           ENV: ${{ inputs.environment }}
           TAG: ${{ needs.build-and-push.outputs.image_tag }}
         run: |
-          # 1. Define Target Directory: apps/<app-name>
+          # 1. Define Target Directory
           TARGET_DIR="manifest-repo/apps/${APP}"
           mkdir -p "$TARGET_DIR"
 
-          # 2. Define Target File: apps/<app-name>/<env>-values.yaml
-          TARGET_FILE="$TARGET_DIR/${ENV}-values.yaml"
+          # 2. Copy Config (Values)
+          # Result: apps/user-service/dv-values.yaml
+          TARGET_VALUES="$TARGET_DIR/${ENV}-values.yaml"
+          cp "app-code/${{ inputs.values_file }}" "$TARGET_VALUES"
 
-          # 3. Copy/Overwrite with latest values from App Repo
-          echo "Copying config to $TARGET_FILE..."
-          cp "app-code/${{ inputs.values_file }}" "$TARGET_FILE"
-
-          # 4. Patch Image Tag
-          # This ensures ArgoCD sees a changed tag (Date-SHA) and deploys
-          echo "Patching image tag to $TAG..."
-          yq -i ".image.tag = \"${TAG}\"" "$TARGET_FILE"
+          # 3. Patch Image Tag in the new values file
+          yq -i ".image.tag = \"${TAG}\"" "$TARGET_VALUES"
+          
+          # 4. Copy Secret (If input provided)
+          if [ -n "${{ inputs.secret_file }}" ]; then
+             if [ -f "app-code/${{ inputs.secret_file }}" ]; then
+                echo "Copying Secret file..."
+                # Result: apps/user-service/dv-secret.yaml (Matching our AppSet logic)
+                cp "app-code/${{ inputs.secret_file }}" "$TARGET_DIR/${ENV}-secret.yaml"
+             else
+                echo "Warning: Secret file input was provided but file not found in repo."
+             fi
+          fi
 
       - name: Commit and Push
         working-directory: manifest-repo
@@ -123,6 +122,9 @@ jobs:
           if git diff --staged --quiet; then
             echo "No changes to commit."
           else
-            git commit -m "deploy(${{ inputs.app_name }}): update ${{ inputs.environment }} to ${{ needs.build-and-push.outputs.image_tag }}"
+            git commit -m "deploy(${{ inputs.app_name }}): update ${{ inputs.environment }} to $TAG"
+            
+            # PRO TIP: Pull rebase handles high-traffic conflicts better
+            git pull --rebase origin main
             git push origin main
           fi
