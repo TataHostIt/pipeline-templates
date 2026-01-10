@@ -14,12 +14,15 @@ on:
         required: true
         type: string
         description: "Path to values file in app repo, e.g., charts/values-dv.yaml"
-      # OPTIONAL: Add this so we can copy the secret if it exists
       secret_file:
         required: false
         type: string
         description: "Path to sealed secret file in app repo, e.g., charts/secret-dv.yaml"
-      # REMOVED: helm_chart_name and helm_chart_version (No longer used/needed)
+      manifest_repo:
+        required: false
+        type: string
+        default: "github.com/TataHostIT/tatahostit-manifests.git"
+        description: "The manifest repository URL (sans protocol/credentials)"
 
 jobs:
   build-and-push:
@@ -33,13 +36,14 @@ jobs:
       - name: Calculate Version Tag
         id: calc_tag
         run: |
-          # Result: 2026.01.09.1645-a1b2c3d
           TAG="$(TZ=America/Los_Angeles date +'%Y.%m.%d.%H%M')-$(git rev-parse --short HEAD)"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "Generated Version: $TAG"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker
 
       - name: Docker Metadata
         id: meta
@@ -76,7 +80,10 @@ jobs:
 
       - name: Checkout Manifest Repo
         run: |
-          git clone https://oauth2:${GLOBAL_MANIFEST_TOKEN}@github.com/TataHostIT/tatahostit-manifests.git manifest-repo
+          # Uses the input if provided, otherwise falls back to the default defined in inputs
+          # We construct the URL to keep the token injection secure
+          git clone https://oauth2:${GLOBAL_MANIFEST_TOKEN}@${{ inputs.manifest_repo }} manifest-repo
+          
           cd manifest-repo
           git checkout main
 
@@ -86,26 +93,23 @@ jobs:
           ENV: ${{ inputs.environment }}
           TAG: ${{ needs.build-and-push.outputs.image_tag }}
         run: |
-          # 1. Define Target Directory
           TARGET_DIR="manifest-repo/apps/${APP}"
           mkdir -p "$TARGET_DIR"
 
-          # 2. Copy Config (Values)
-          # Result: apps/user-service/dv-values.yaml
+          # Copy Config (Values)
           TARGET_VALUES="$TARGET_DIR/${ENV}-values.yaml"
           cp "app-code/${{ inputs.values_file }}" "$TARGET_VALUES"
 
-          # 3. Patch Image Tag in the new values file
+          # Patch Image Tag
           yq -i ".image.tag = \"${TAG}\"" "$TARGET_VALUES"
           
-          # 4. Copy Secret (If input provided)
+          # Copy Secret (If input provided)
           if [ -n "${{ inputs.secret_file }}" ]; then
              if [ -f "app-code/${{ inputs.secret_file }}" ]; then
                 echo "Copying Secret file..."
-                # Result: apps/user-service/dv-secret.yaml (Matching our AppSet logic)
                 cp "app-code/${{ inputs.secret_file }}" "$TARGET_DIR/${ENV}-secret.yaml"
              else
-                echo "Warning: Secret file input was provided but file not found in repo."
+                echo "Warning: Secret file input provided but file not found in repo."
              fi
           fi
 
@@ -121,8 +125,6 @@ jobs:
             echo "No changes to commit."
           else
             git commit -m "deploy(${{ inputs.app_name }}): update ${{ inputs.environment }} to $TAG"
-            
-            # PRO TIP: Pull rebase handles high-traffic conflicts better
             git pull --rebase origin main
             git push origin main
           fi
