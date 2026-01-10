@@ -23,10 +23,15 @@ on:
         type: string
         default: "github.com/TataHostIT/tatahostit-manifests.git"
         description: "The manifest repository URL (sans protocol/credentials)"
+      runs_on:
+        required: false
+        type: string
+        default: "tatahostit-runners"
+        description: "Runner label to execute jobs on"
 
 jobs:
   build-and-push:
-    runs-on: tatahostit-runners
+    runs-on: ${{ inputs.runs_on }}
     outputs:
       image_tag: ${{ steps.calc_tag.outputs.tag }}
     steps:
@@ -66,7 +71,7 @@ jobs:
 
   update-manifests:
     needs: build-and-push
-    runs-on: tatahostit-runners
+    runs-on: ${{ inputs.runs_on }}
     steps:
       - name: Checkout App Code
         uses: actions/checkout@v4
@@ -80,10 +85,7 @@ jobs:
 
       - name: Checkout Manifest Repo
         run: |
-          # Uses the input if provided, otherwise falls back to the default defined in inputs
-          # We construct the URL to keep the token injection secure
           git clone https://oauth2:${GLOBAL_MANIFEST_TOKEN}@${{ inputs.manifest_repo }} manifest-repo
-          
           cd manifest-repo
           git checkout main
 
