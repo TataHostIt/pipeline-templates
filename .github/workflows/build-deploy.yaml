@@ -34,7 +34,7 @@ jobs:
         id: calc_tag
         run: |
           # Result: 2026.01.09.1645-a1b2c3d
-          TAG="$(date +'%Y.%m.%d.%H%M')-$(git rev-parse --short HEAD)"
+          TAG="$(TZ=America/Los_Angeles date +'%Y.%m.%d.%H%M')-$(git rev-parse --short HEAD)"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "Generated Version: $TAG"
 
