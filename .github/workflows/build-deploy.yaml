@@ -9,9 +9,11 @@ on:
       environment:
         required: true
         type: string
+        description: "e.g., dv, pr"
       values_file:
         required: true
         type: string
+        description: "Path to values file in app repo, e.g., charts/values.yaml"
       helm_chart_name:
         required: false
         type: string
@@ -25,10 +27,22 @@ jobs:
   build-and-push:
     runs-on: tatahostit-runners
     outputs:
-      image_tag: ${{ steps.meta.outputs.version }}
+      # We output the explicit Date-SHA tag we calculated
+      image_tag: ${{ steps.calc_tag.outputs.tag }}
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      - name: Calculate Version Tag
+        id: calc_tag
+        run: |
+          # Format: YYYY.MM.DD.HHMM-shortSHA
+          # Example: 2026.01.09.1645-a1b2c3d
+          TAG="$(date +'%Y.%m.%d.%H%M')-$(git rev-parse --short HEAD)"
+          
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Generated Version: $TAG"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -40,12 +54,11 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: harbor.tatahostit.com/library/${{ inputs.app_name }}
-          # GENERATE MEANINGFUL TAGS
           tags: |
-            # Tag 1: The "latest" for this specific branch (good for cache)
+            # Keep 'latest' for the branch for caching
             type=ref,event=branch
-            # Tag 2: Human Readable: 2026.01.08-e603771
-            type=raw,value={{date 'YYYY.MM.DD'}}-{{sha}}
+            # Use our explicit tag
+            type=raw,value=${{ steps.calc_tag.outputs.tag }}
 
       - name: Build and Push
         uses: docker/build-push-action@v5
@@ -54,10 +67,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # --- CACHING MAGIC ---
-          # 1. Look for cache in the "branch-latest" image we pushed previously
           cache-from: type=registry,ref=harbor.tatahostit.com/library/${{ inputs.app_name }}:${{ github.ref_name }}
-          # 2. Write cache metadata into the image we are building now
           cache-to: type=inline
 
   update-manifests:
@@ -71,49 +81,36 @@ jobs:
 
       - name: Install yq
         run: |
-          # Use curl instead of wget, and sudo for permissions
           sudo curl -L https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -o /usr/bin/yq
           sudo chmod +x /usr/bin/yq
 
       - name: Checkout Manifest Repo
-        # We manually clone because 'actions/checkout' prefers GitHub secrets.
-        # We use the Env Var injected by K8s directly.
         run: |
           git clone https://oauth2:${GLOBAL_MANIFEST_TOKEN}@github.com/TataHostIT/tatahostit-manifests.git manifest-repo
           cd manifest-repo
           git checkout main
 
-      - name: Setup & Patch Manifests
+      - name: Update Manifests
         env:
           APP: ${{ inputs.app_name }}
           ENV: ${{ inputs.environment }}
           TAG: ${{ needs.build-and-push.outputs.image_tag }}
-          CHART_NAME: ${{ inputs.helm_chart_name }}
-          CHART_VER: ${{ inputs.helm_chart_version }}
         run: |
-          # 1. Define Target Directory
-          TARGET_DIR="manifest-repo/environments/${ENV}/${APP}"
-          mkdir -p $TARGET_DIR
+          # 1. Define Target Directory: apps/<app-name>
+          TARGET_DIR="manifest-repo/apps/${APP}"
+          mkdir -p "$TARGET_DIR"
 
-          # 2. Copy Values
-          cp "app-code/${{ inputs.values_file }}" "$TARGET_DIR/values.yaml"
+          # 2. Define Target File: apps/<app-name>/<env>-values.yaml
+          TARGET_FILE="$TARGET_DIR/${ENV}-values.yaml"
 
-          # 3. Patch Image Tag
-          # Ensure yq is installed on your runner image, or install it here
-          yq -i ".image.tag = \"${TAG}\"" "$TARGET_DIR/values.yaml"
+          # 3. Copy/Overwrite with latest values from App Repo
+          echo "Copying config to $TARGET_FILE..."
+          cp "app-code/${{ inputs.values_file }}" "$TARGET_FILE"
 
-          # 4. Create Wrapper Chart if missing
-          if [ ! -f "$TARGET_DIR/Chart.yaml" ]; then
-            cat <<EOF > "$TARGET_DIR/Chart.yaml"
-          apiVersion: v2
-          name: ${APP}
-          version: 0.1.0
-          dependencies:
-            - name: ${CHART_NAME}
-              version: ${CHART_VER}
-              repository: oci://harbor.tatahostit.com/library
-          EOF
-          fi
+          # 4. Patch Image Tag
+          # This ensures ArgoCD sees a changed tag (Date-SHA) and deploys
+          echo "Patching image tag to $TAG..."
+          yq -i ".image.tag = \"${TAG}\"" "$TARGET_FILE"
 
       - name: Commit and Push
         working-directory: manifest-repo
@@ -126,7 +123,6 @@ jobs:
           if git diff --staged --quiet; then
             echo "No changes to commit."
           else
-            git commit -m "deploy(${{ inputs.app_name }}): update ${{ inputs.environment }} to $TAG"
-            # The remote URL already has the token from the clone step
+            git commit -m "deploy(${{ inputs.app_name }}): update ${{ inputs.environment }} to ${{ needs.build-and-push.outputs.image_tag }}"
             git push origin main
           fi
