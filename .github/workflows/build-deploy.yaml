@@ -72,6 +72,9 @@ jobs:
   update-manifests:
     needs: build-and-push
     runs-on: ${{ inputs.runs_on }}
+    # THIS LINE makes it manual/protected if you configure it in Repo Settings -> Environments
+    environment: ${{ inputs.environment }}
+
     steps:
       - name: Checkout App Code
         uses: actions/checkout@v4
