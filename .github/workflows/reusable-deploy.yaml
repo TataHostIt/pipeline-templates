@@ -1,0 +1,53 @@
+name: "Reusable Sync"
+
+on:
+  workflow_call:
+    inputs:
+      app_name: { required: true, type: string }
+      image_tag: { required: true, type: string }
+      runs_on: { required: true, type: string }
+      manifest_repo:
+        required: false
+        type: string
+        default: "github.com/TataHostIT/tatahostit-manifests.git"
+
+jobs:
+  sync:
+    runs-on: ${{ inputs.runs_on }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: app-code }
+
+      - name: Update GitOps Repo
+        env:
+          APP: ${{ inputs.app_name }}
+          TAG: ${{ inputs.image_tag }}
+        run: |
+          # 1. Install yq for tag patching
+          sudo curl -L https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -o /usr/bin/yq && sudo chmod +x /usr/bin/yq
+          
+          # 2. Clone Manifest Repo
+          git clone https://oauth2:${GLOBAL_MANIFEST_TOKEN}@${{ inputs.manifest_repo }} manifest-repo
+          
+          # 3. Move all YAMLs from app/deploy/* to manifest-repo/apps/app-name/
+          mkdir -p "manifest-repo/apps/${APP}"
+          cp app-code/deploy/*.yaml "manifest-repo/apps/${APP}/"
+          
+          # 4. Patch the new image tag into all copied values files
+          cd manifest-repo/apps/${APP}
+          for file in *-values.yaml; do
+            if [ -f "$file" ]; then
+              yq -i ".image.tag = \"${TAG}\"" "$file"
+            fi
+          done
+          
+          # 5. Commit and Push
+          cd ../..
+          git config user.name "CI Pipeline" && git config user.email "ci@tatahostit.com"
+          git add .
+          if git diff --staged --quiet; then
+             echo "No changes."
+          else
+             git commit -m "deploy($APP): update manifests to $TAG"
+             git push origin main
+          fi

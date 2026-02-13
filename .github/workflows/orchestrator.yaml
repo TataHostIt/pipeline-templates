@@ -1,0 +1,34 @@
+name: "Orchestrator Pipeline"
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        required: false
+        type: string
+      runs_on:
+        required: false
+        type: string
+        default: "tatahostit-runners"
+      # Devs can set this to 'false' to skip the manifest update entirely
+      enable_sync:
+        type: boolean
+        default: true
+
+jobs:
+  # 1. BUILD & PUSH IMAGE
+  build:
+    uses: TataHostIT/pipeline-templates/.github/workflows/reusable-build.yaml@main
+    with:
+      app_name: ${{ inputs.app_name || github.event.repository.name }}
+      runs_on: ${{ inputs.runs_on }}
+
+  # 2. SYNC MANIFESTS (Dev/Stg/Prod all at once)
+  sync-manifests:
+    needs: build
+    if: inputs.enable_sync == true
+    uses: TataHostIT/pipeline-templates/.github/workflows/reusable-deploy.yaml@main
+    with:
+      app_name: ${{ inputs.app_name || github.event.repository.name }}
+      image_tag: ${{ needs.build.outputs.image_tag }}
+      runs_on: ${{ inputs.runs_on }}
